@@ -81,7 +81,7 @@ async def download_pdf(root_pubmed_url, article_data, output_dir="pdf_db"):
     headers = make_header()
     # Reference our articles DataFrame containing accumulated data for ALL scraped articles
     url = article_data['doi']
-    print(url)
+    # print(url)
     if article_data['open_access']:
         try:
             async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
@@ -90,16 +90,19 @@ async def download_pdf(root_pubmed_url, article_data, output_dir="pdf_db"):
                     soup = BeautifulSoup(data, "lxml")
                     pdf_url = soup.find('a',{'class','int-view'}).attrs['href'] if soup.find('a',{'class','int-view'}) else ''
                     if pdf_url:
-                        # print(f"PDF URL: {root_pubmed_url+pdf_url}")
+                        print(f"DOWNLOADING: {root_pubmed_url+pdf_url}")
                         article_data['pdf_link'] = root_pubmed_url+pdf_url
-                        # async with session.get(root_pubmed_url+pdf_url) as res:
-                        #     content = await res.read()
-                        # # Check everything went well
-                        # if res.status != 200:
-                        #     print(f"Download failed: {res.status}")
-                        #     return
-                        # async with aiofiles.open(output_dir+"/"+article_data['title']+'.pdf', "+wb") as f:
-                        #     await f.write(content)
+                        async with session.get(root_pubmed_url+pdf_url) as res:
+                            content = await res.read()
+                        # Check everything went well
+                        if res.status != 200:
+                            print(f"Download failed: {res.status}")
+                            return
+                        async with aiofiles.open(output_dir+"/"+article_data['title']+'.pdf', "+wb") as f:
+                            await f.write(content)
+                        # r = requests.get(root_pubmed_url+pdf_url, stream=True)
+                        # with open(output_dir+"/"+article_data['title']+'.pdf', 'wb') as f:
+                        #     f.write(r.content)
         except Exception as e:
             print(f"error: {e}")
         finally:
@@ -314,7 +317,7 @@ if __name__ == "__main__":
     # We use asyncio's BoundedSemaphore method to limit the number of asynchronous requests
     #    we make to PubMed at a time to avoid a ban (and to be nice to PubMed servers)
     # Higher value for BoundedSemaphore yields faster scraping, and a higher chance of ban. 100-500 seems to be OK.
-    semaphore = asyncio.BoundedSemaphore(300)
+    semaphore = asyncio.BoundedSemaphore(100)
 
     # Get and run the loop to build a list of all URLs
     loop = asyncio.get_event_loop()

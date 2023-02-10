@@ -33,6 +33,7 @@ import requests
 import asyncio
 import aiohttp
 import socket
+import aiofiles
 import warnings; warnings.filterwarnings('ignore') # aiohttp produces deprecation warnings that don't concern us
 #import nest_asyncio; nest_asyncio.apply() # necessary to run nested async loops in jupyter notebooks
 
@@ -74,6 +75,37 @@ def make_header():
             }
     return headers
 
+async def download_pdf(root_pubmed_url, article_data, output_dir="pdf_db"):
+    """download the article pdf into pdf_db folder"""
+    conn = aiohttp.TCPConnector(family=socket.AF_INET)
+    headers = make_header()
+    # Reference our articles DataFrame containing accumulated data for ALL scraped articles
+    url = article_data['doi']
+    print(url)
+    if article_data['open_access']:
+        try:
+            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+                async with semaphore, session.get(url) as response:
+                    data = await response.text()
+                    soup = BeautifulSoup(data, "lxml")
+                    pdf_url = soup.find('a',{'class','int-view'}).attrs['href'] if soup.find('a',{'class','int-view'}) else ''
+                    if pdf_url:
+                        # print(f"PDF URL: {root_pubmed_url+pdf_url}")
+                        article_data['pdf_link'] = root_pubmed_url+pdf_url
+                        # async with session.get(root_pubmed_url+pdf_url) as res:
+                        #     content = await res.read()
+                        # # Check everything went well
+                        # if res.status != 200:
+                        #     print(f"Download failed: {res.status}")
+                        #     return
+                        # async with aiofiles.open(output_dir+"/"+article_data['title']+'.pdf', "+wb") as f:
+                        #     await f.write(content)
+        except Exception as e:
+            print(f"error: {e}")
+        finally:
+            pass
+
+
 async def extract_by_article(url):
     '''
     Extracts all data from a single article
@@ -89,6 +121,9 @@ async def extract_by_article(url):
             data = await response.text()
             soup = BeautifulSoup(data, "lxml")
             # Get article abstract if exists - sometimes abstracts are not available (not an error)
+            # get paper access type
+            paper_access = True if soup.find('span',{'class','free-label'}) else False
+            doi = soup.find('a',{'class','id-link'}).attrs['href'] if soup.find('a',{'class','id-link'}) else ''
             try:
                 abstract_raw = soup.find('div', {'class': 'abstract-content selected'}).find_all('p')
                 # Some articles are in a split background/objectives/method/results style, we need to join these paragraphs
@@ -146,7 +181,9 @@ async def extract_by_article(url):
                 'affiliations': affiliations,
                 'journal': journal,
                 'keywords': keywords,
-                'date': date
+                'date': date,
+                'open_access': paper_access,
+                'doi': doi
             }
             # Add dict containing one article's data to list of article dicts
             articles_data.append(article_data)
@@ -230,6 +267,19 @@ async def get_article_data(urls):
     await asyncio.gather(*tasks)
 
 
+async def get_article_pdfs(root_pubmed_url, articles):
+    """
+    Download articles PDFs
+    """
+    tasks = []
+    for article in articles:
+        task = asyncio.create_task(download_pdf(root_pubmed_url, article))
+        tasks.append(task)
+
+    await asyncio.gather(*tasks)
+
+
+
 if __name__ == "__main__":
     # Set options so user can choose number of pages and publication date range to scrape, and output file name
     parser = argparse.ArgumentParser(description='Asynchronous PubMed Scraper')
@@ -258,10 +308,13 @@ if __name__ == "__main__":
     # Empty list to store URLs already scraped
     scraped_urls = []
 
+    # Empty list to store if the paper is open access or not
+    open_access = []
+
     # We use asyncio's BoundedSemaphore method to limit the number of asynchronous requests
     #    we make to PubMed at a time to avoid a ban (and to be nice to PubMed servers)
     # Higher value for BoundedSemaphore yields faster scraping, and a higher chance of ban. 100-500 seems to be OK.
-    semaphore = asyncio.BoundedSemaphore(100)
+    semaphore = asyncio.BoundedSemaphore(300)
 
     # Get and run the loop to build a list of all URLs
     loop = asyncio.get_event_loop()
@@ -270,9 +323,10 @@ if __name__ == "__main__":
     # Get and run the loop to get article data into a DataFrame from a list of all URLs
     loop = asyncio.get_event_loop()
     loop.run_until_complete(get_article_data(urls))
+    loop.run_until_complete(get_article_pdfs(root_pubmed_url,articles_data))
 
     # Create DataFrame to store data from all articles
-    articles_df = pd.DataFrame(articles_data, columns=['title','abstract','affiliations','authors','journal','date','keywords','url'])
+    articles_df = pd.DataFrame(articles_data, columns=['title','abstract','affiliations','authors','journal','date','keywords','url', 'open_access', 'doi', 'pdf_link'])
     print('Preview of scraped article data:\n')
     print(articles_df.head(5))
     # Save all extracted article data to CSV for further processing

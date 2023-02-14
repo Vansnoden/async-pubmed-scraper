@@ -75,38 +75,42 @@ def make_header():
             }
     return headers
 
-async def download_pdf(root_pubmed_url, article_data, output_dir="pdf_db"):
+def incrementor():
+    info = {"count": 0}
+    def number():
+        info["count"] += 1
+        return info["count"]
+    return number
+
+number = incrementor()
+
+async def download_pdf(root_pubmed_url, id, doi, session, output_dir="pdf_db"):
     """download the article pdf into pdf_db folder"""
     conn = aiohttp.TCPConnector(family=socket.AF_INET)
     headers = make_header()
     # Reference our articles DataFrame containing accumulated data for ALL scraped articles
-    url = article_data['doi']
-    # print(url)
-    if article_data['open_access']:
-        try:
-            async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
-                async with semaphore, session.get(url) as response:
-                    data = await response.text()
-                    soup = BeautifulSoup(data, "lxml")
-                    pdf_url = soup.find('a',{'class','int-view'}).attrs['href'] if soup.find('a',{'class','int-view'}) else ''
-                    if pdf_url:
-                        print(f"DOWNLOADING: {root_pubmed_url+pdf_url}")
-                        article_data['pdf_link'] = root_pubmed_url+pdf_url
-                        async with session.get(root_pubmed_url+pdf_url) as res:
-                            content = await res.read()
-                        # Check everything went well
-                        if res.status != 200:
-                            print(f"Download failed: {res.status}")
-                            return
-                        async with aiofiles.open(output_dir+"/"+article_data['title']+'.pdf', "+wb") as f:
-                            await f.write(content)
-                        # r = requests.get(root_pubmed_url+pdf_url, stream=True)
-                        # with open(output_dir+"/"+article_data['title']+'.pdf', 'wb') as f:
-                        #     f.write(r.content)
-        except Exception as e:
-            print(f"error: {e}")
-        finally:
-            pass
+    url = doi
+    pdf_link = ""
+    try:
+        async with session:
+            async with semaphore, session.get(url) as response:
+                data = await response.text()
+                soup = BeautifulSoup(data, "lxml")
+                pdf_url = soup.find('a',{'class','int-view'}).attrs['href'] if soup.find('a',{'class','int-view'}) else ''
+                if pdf_url:
+                    pdf_link = root_pubmed_url+pdf_url
+                    async with session.get(root_pubmed_url+pdf_url) as res:
+                        content = await res.read()
+                        # name = pdf_url.split('/')
+                        with open(f"{output_dir}/{id}.pdf", "wb+") as f:
+                            f.write(content)
+                    if res.status != 200:
+                        print(f"Download failed for: {pdf_link}")
+                        return pdf_link
+                    return pdf_link
+    except Exception as e:
+        print(f"error: {e}")
+    
 
 
 async def extract_by_article(url):
@@ -125,8 +129,12 @@ async def extract_by_article(url):
             soup = BeautifulSoup(data, "lxml")
             # Get article abstract if exists - sometimes abstracts are not available (not an error)
             # get paper access type
+            pdf_id = number()
             paper_access = True if soup.find('span',{'class','free-label'}) else False
             doi = soup.find('a',{'class','id-link'}).attrs['href'] if soup.find('a',{'class','id-link'}) else ''
+            pdf_link = ''
+            if doi:
+                pdf_link = await download_pdf("https://www.ncbi.nlm.nih.gov", pdf_id, doi, session)
             try:
                 abstract_raw = soup.find('div', {'class': 'abstract-content selected'}).find_all('p')
                 # Some articles are in a split background/objectives/method/results style, we need to join these paragraphs
@@ -177,6 +185,7 @@ async def extract_by_article(url):
 
             # Format data as a dict to insert into a DataFrame
             article_data = {
+                'pdf_id': pdf_id,
                 'url': url,
                 'title': title,
                 'authors': authors,
@@ -186,7 +195,8 @@ async def extract_by_article(url):
                 'keywords': keywords,
                 'date': date,
                 'open_access': paper_access,
-                'doi': doi
+                'doi': doi,
+                'pdf_link': pdf_link,
             }
             # Add dict containing one article's data to list of article dicts
             articles_data.append(article_data)
@@ -326,10 +336,10 @@ if __name__ == "__main__":
     # Get and run the loop to get article data into a DataFrame from a list of all URLs
     loop = asyncio.get_event_loop()
     loop.run_until_complete(get_article_data(urls))
-    loop.run_until_complete(get_article_pdfs(root_pubmed_url,articles_data))
+    # loop.run_until_complete(get_article_pdfs(root_pubmed_url,articles_data))
 
     # Create DataFrame to store data from all articles
-    articles_df = pd.DataFrame(articles_data, columns=['title','abstract','affiliations','authors','journal','date','keywords','url', 'open_access', 'doi', 'pdf_link'])
+    articles_df = pd.DataFrame(articles_data, columns=['pdf_id','title','abstract','affiliations','authors','journal','date','keywords','url','open_access','doi','pdf_link'])
     print('Preview of scraped article data:\n')
     print(articles_df.head(5))
     # Save all extracted article data to CSV for further processing
